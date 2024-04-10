@@ -29,7 +29,7 @@ autoimpl!(
   i64
 );
 
-pub struct SomePointer {}
+pub(crate) struct SomePointer {}
 impl<T> KernelArgument for *mut T {
   fn as_opaque(&self) -> OpaqueHandle {
     (addr_of!(*self).cast(), size_of_val(self), TypeId::of::<SomePointer>())

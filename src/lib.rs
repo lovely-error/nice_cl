@@ -15,7 +15,7 @@ use va_args_emu::{KernelArguments, OpaqueHandle, SomePointer};
 pub enum OCLFailure {
     ResourcesExhausted, NoPlatforms, InvalidProgramm
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)] #[repr(C)]
 pub struct MemoryRef<T> {
     ptr: *mut c_void,
     count: usize,
@@ -41,7 +41,11 @@ impl<T> MemoryRef<T> {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.cast(), self.count) }
     }
 }
-struct SomeMemoryRef {}
+#[repr(C)]
+struct SomeMemoryRef {
+    ptr: *mut c_void,
+    _count: usize,
+}
 impl<T> va_args_emu::KernelArgument for MemoryRef<T> {
     fn as_opaque(&self) -> OpaqueHandle {
         (addr_of!(self.ptr).cast(), 8, TypeId::of::<SomeMemoryRef>())
@@ -49,7 +53,7 @@ impl<T> va_args_emu::KernelArgument for MemoryRef<T> {
 }
 #[derive(Debug, Clone, Copy)]
 pub enum KernelCreationFailure {
-    NoMem,
+    ResourcesExhausted,
     InvalidArgument(u32),
     InvalidKernelName,
     ArgNumMismatch(u32, u32),
@@ -199,7 +203,7 @@ impl CodeBundle {
             cl_sys::CL_SUCCESS => (),
             cl_sys::CL_OUT_OF_RESOURCES |
             cl_sys::CL_OUT_OF_HOST_MEMORY => {
-                return Err(KernelCreationFailure::NoMem)
+                return Err(KernelCreationFailure::ResourcesExhausted)
             },
             cl_sys::CL_INVALID_KERNEL_NAME => {
                 return Err(KernelCreationFailure::InvalidKernelName)
@@ -221,7 +225,7 @@ impl CodeBundle {
             cl_sys::CL_SUCCESS => (),
             cl_sys::CL_OUT_OF_RESOURCES |
             cl_sys::CL_OUT_OF_HOST_MEMORY => {
-                return Err(KernelCreationFailure::NoMem)
+                return Err(KernelCreationFailure::ResourcesExhausted)
             },
             cl_sys::CL_INVALID_VALUE |
             cl_sys::CL_INVALID_KERNEL |
@@ -267,7 +271,7 @@ impl CodeBundle {
                             return Err(KernelCreationFailure::ArgTypeMismatch(ix));
                         }
                     },
-                    "uchar\n" | "unsigned char\0" => {
+                    "uchar\0" | "unsigned char\0" => {
                         if id != TypeId::of::<u8>() {
                             return Err(KernelCreationFailure::ArgTypeMismatch(ix));
                         }
@@ -308,7 +312,7 @@ impl CodeBundle {
             let ret_c ;
             match id {
                 _ if id == TypeId::of::<SomeMemoryRef>() => {
-                    let ptr = ptr.cast::<*const c_void>().read();
+                    let ptr = (*ptr.cast::<SomeMemoryRef>()).ptr;
                     ret_c = clSetKernelArgSVMPointer(kern_ptr, ix, ptr);
                 },
                 _ => {
@@ -319,7 +323,7 @@ impl CodeBundle {
                 cl_sys::CL_SUCCESS => (),
                 cl_sys::CL_OUT_OF_RESOURCES |
                 cl_sys::CL_OUT_OF_HOST_MEMORY => {
-                    return Err(KernelCreationFailure::NoMem)
+                    return Err(KernelCreationFailure::ResourcesExhausted)
                 },
                 cl_sys::CL_INVALID_DEVICE_QUEUE => {
                     panic!("Invalid device queue!")
@@ -765,7 +769,7 @@ impl Drop for Device {
         let prior = OCL_SHARED_CONTEXT.dev_refs.fetch_sub(1, Ordering::Release);
         if prior == 1 {
             let _ = clReleaseContext(OCL_SHARED_CONTEXT.cl_contex);
-            OCL_SHARED_CONTEXT.state.store(OCLSharedContextLifecycleState::Uninit as _, Ordering::Release);
+            OCL_SHARED_CONTEXT.state.store(OCLSharedContextInitState::Uninit as _, Ordering::Release);
         }
     } }
 }
@@ -943,7 +947,7 @@ pub fn enumerate_platforms() -> Result<Vec<Platform>, OCLFailure> { unsafe {
     return Ok(pfs)
 } }
 #[derive(Debug, Clone, Copy)] #[repr(u8)]
-enum OCLSharedContextLifecycleState {
+enum OCLSharedContextInitState {
     Uninit, InInit, DoneInit
 }
 struct OCLSharedContext {
@@ -957,17 +961,17 @@ struct OCLSharedContext {
 impl OCLSharedContext {
     fn is_ready(&self) -> bool {
         let outcome = self.state.compare_exchange(
-            OCLSharedContextLifecycleState::DoneInit as _,
-            OCLSharedContextLifecycleState::DoneInit as _,
+            OCLSharedContextInitState::DoneInit as _,
+            OCLSharedContextInitState::DoneInit as _,
             Ordering::Acquire,
             Ordering::Relaxed
         );
         match outcome {
             Ok(_) => true,
-            Err(real) => match unsafe { transmute::<_, OCLSharedContextLifecycleState>(real) } {
-                OCLSharedContextLifecycleState::Uninit => panic!("Attempt to access uninited ocl context!"),
-                OCLSharedContextLifecycleState::InInit => false,
-                OCLSharedContextLifecycleState::DoneInit => unreachable!(),
+            Err(real) => match unsafe { transmute::<_, OCLSharedContextInitState>(real) } {
+                OCLSharedContextInitState::Uninit => panic!("Attempt to access uninited ocl context!"),
+                OCLSharedContextInitState::InInit => false,
+                OCLSharedContextInitState::DoneInit => unreachable!(),
             },
         }
     }
@@ -981,24 +985,24 @@ static mut OCL_SHARED_CONTEXT: OCLSharedContext = OCLSharedContext {
     dev_ids: [null_mut();_],
     len: 0,
     dev_refs: AtomicU32::new(0),
-    state: AtomicU8::new(OCLSharedContextLifecycleState::Uninit as _),
+    state: AtomicU8::new(OCLSharedContextInitState::Uninit as _),
     platform: None,
 };
 
 pub fn enumerate_devices() -> Result<Vec<Device>, OCLFailure> { unsafe {
 
     let outcome = OCL_SHARED_CONTEXT.state.compare_exchange(
-        OCLSharedContextLifecycleState::Uninit as _,
-        OCLSharedContextLifecycleState::InInit as _,
+        OCLSharedContextInitState::Uninit as _,
+        OCLSharedContextInitState::InInit as _,
         Ordering::Relaxed,
         Ordering::Relaxed
     );
     match outcome {
         Ok(_) => (),
-        Err(real) => match transmute::<_, OCLSharedContextLifecycleState>(real) {
-            OCLSharedContextLifecycleState::Uninit => unreachable!(),
-            OCLSharedContextLifecycleState::InInit |
-            OCLSharedContextLifecycleState::DoneInit => panic!("Attempt to reinit OCL context"),
+        Err(real) => match transmute::<_, OCLSharedContextInitState>(real) {
+            OCLSharedContextInitState::Uninit => unreachable!(),
+            OCLSharedContextInitState::InInit |
+            OCLSharedContextInitState::DoneInit => panic!("Attempt to reinit OCL context"),
         },
     }
 
@@ -1026,7 +1030,6 @@ pub fn enumerate_devices() -> Result<Vec<Device>, OCLFailure> { unsafe {
     );
     match ret_code {
         cl_sys::CL_SUCCESS => (),
-        cl_sys::CL_DEVICE_NOT_FOUND => (),
         cl_sys::CL_OUT_OF_RESOURCES |
         cl_sys::CL_OUT_OF_HOST_MEMORY => {
             return Err(OCLFailure::ResourcesExhausted)
@@ -1034,6 +1037,7 @@ pub fn enumerate_devices() -> Result<Vec<Device>, OCLFailure> { unsafe {
         cl_sys::CL_INVALID_PLATFORM |
         cl_sys::CL_INVALID_DEVICE_TYPE |
         cl_sys::CL_INVALID_VALUE |
+        cl_sys::CL_DEVICE_NOT_FOUND |
         _ => unreachable!(),
     }
     len = len.min(16);
@@ -1128,6 +1132,7 @@ pub fn enumerate_devices() -> Result<Vec<Device>, OCLFailure> { unsafe {
             if invalid {
                 panic!()
             }
+            unreachable!()
         }
         let svm_caps = DeviceSVMProps {
             fine_grain_buffer: svm_caps & CL_DEVICE_SVM_FINE_GRAIN_BUFFER != 0,
@@ -1220,7 +1225,7 @@ pub fn enumerate_devices() -> Result<Vec<Device>, OCLFailure> { unsafe {
         dev.ext.command_queue = q;
     }
 
-    OCL_SHARED_CONTEXT.state.store(OCLSharedContextLifecycleState::DoneInit as _, Ordering::Release);
+    OCL_SHARED_CONTEXT.state.store(OCLSharedContextInitState::DoneInit as _, Ordering::Release);
 
     return Ok(devs)
 } }
@@ -1407,7 +1412,7 @@ fn wait_on_token() {
     let devs = enumerate_devices().unwrap();
     let dev = &devs[0];
 
-    let item_count = 256;
+    let item_count = 65535;
     let mut mem = dev.allocate_buffer::<u32>(item_count).unwrap();
     let mut ix = 0;
     for item in mem.as_mut_items() {
