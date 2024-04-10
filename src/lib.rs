@@ -87,7 +87,7 @@ impl CodeBundle {
             return Some(str);
         })
     }
-    pub fn from_textual_reprs(
+    pub fn from_text_bytes(
         textual_reprs: &[&[u8]],
     ) -> Result<CodeBundle, OCLFailure> { unsafe {
         let input_len = textual_reprs.len();
@@ -662,7 +662,7 @@ pub struct Device {
     ext: Box<DeviceSpecificExtData>
 }
 impl Device {
-    pub fn allocate_memory<T>(&self, count: usize) -> Result<MemoryRef<T>, OCLFailure> { unsafe {
+    pub fn allocate_buffer<T>(&self, count: usize) -> Result<MemoryRef<T>, OCLFailure> { unsafe {
         assert!(count > 0, "Item count cannot be zero");
         assert!(self.ext.props.shared_mem_caps.fine_grain_buffer, "No support of fine-grain buffers!");
         let alloc_props =
@@ -697,11 +697,23 @@ impl Device {
     pub fn launch_kernel(
         &self,
         kernel: Kernel,
-        grid_dims: usize
+        grid_dims: usize,
+        dependencies: &[&Token]
     ) -> Result<Token, KernelLaunchFailure> { unsafe {
         let grid_dim = 1;
         let dims: [size_t;3] = [grid_dims, 0, 0];
         let mut completion_token = null_mut();
+        let mut deps = Vec::new();
+        deps.reserve(dependencies.len());
+        for dep in dependencies {
+            let dep = (*dep.0.get()).token;
+            deps.push(dep)
+        }
+        let (deps_ptr, deps_num) = if deps.is_empty() {
+            (null(), 0)
+        } else {
+            (deps.as_ptr(), deps.len() as u32)
+        };
         let ret_code = clEnqueueNDRangeKernel(
             self.ext.command_queue,
             kernel.handle,
@@ -709,8 +721,8 @@ impl Device {
             null(),
             dims.as_ptr(),
             null(),
-            0,
-            null(),
+            deps_num,
+            deps_ptr,
             &mut completion_token
         );
         match ret_code {
@@ -1219,7 +1231,7 @@ fn mem() {
 
     let dev = &devs[0];
 
-    let mut mem = dev.allocate_memory::<u32>(64).unwrap();
+    let mut mem = dev.allocate_buffer::<u32>(64).unwrap();
 
     let mut ix = 0;
     for item in mem.as_mut_items() {
@@ -1244,7 +1256,7 @@ fn kernel_names() {
 
     let text = "__kernel void lol() {}; __kernel void lol2() {}; __kernel void lol3() {}";
 
-    let bundle = CodeBundle::from_textual_reprs(&[
+    let bundle = CodeBundle::from_text_bytes(&[
         text.as_bytes()
     ]).unwrap();
 
@@ -1309,7 +1321,7 @@ fn ops_on_cb() {
     let dev = &devs[0];
 
     let item_count = 65535;
-    let mut mem = dev.allocate_memory::<u32>(item_count).unwrap();
+    let mut mem = dev.allocate_buffer::<u32>(item_count).unwrap();
     let mut ix = 0;
     for item in mem.as_mut_items() {
         *item = ix;
@@ -1322,14 +1334,14 @@ fn ops_on_cb() {
         param1[gix] *= 2;
     }"#;
 
-    let bundle = CodeBundle::from_textual_reprs(&[
+    let bundle = CodeBundle::from_text_bytes(&[
         text.as_bytes()
     ]).unwrap();
 
     let param = 2u32;
     let kern = bundle.build_kernel("lol", (mem, param,)).unwrap();
 
-    let tok = dev.launch_kernel(kern, item_count, ).unwrap();
+    let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
 
     let done = core::sync::atomic::AtomicBool::new(false);
     tok.attach_completion_callback(|_|{
@@ -1355,7 +1367,7 @@ fn wait_on_blocking_call() {
     let dev = &devs[0];
 
     let item_count = 65535;
-    let mut mem = dev.allocate_memory::<u32>(item_count).unwrap();
+    let mut mem = dev.allocate_buffer::<u32>(item_count).unwrap();
     let mut ix = 0;
     for item in mem.as_mut_items() {
         *item = ix;
@@ -1368,14 +1380,14 @@ fn wait_on_blocking_call() {
         param1[gix] *= 2;
     }"#;
 
-    let bundle = CodeBundle::from_textual_reprs(&[
+    let bundle = CodeBundle::from_text_bytes(&[
         text.as_bytes()
     ]).unwrap();
 
     let param = 2u32;
     let kern = bundle.build_kernel("lol", (mem, param,)).unwrap();
 
-    let tok = dev.launch_kernel(kern, item_count, ).unwrap();
+    let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
 
     tok.await_completion().unwrap();
 
@@ -1396,7 +1408,7 @@ fn wait_on_token() {
     let dev = &devs[0];
 
     let item_count = 256;
-    let mut mem = dev.allocate_memory::<u32>(item_count).unwrap();
+    let mut mem = dev.allocate_buffer::<u32>(item_count).unwrap();
     let mut ix = 0;
     for item in mem.as_mut_items() {
         *item = ix;
@@ -1409,12 +1421,12 @@ fn wait_on_token() {
         param1[gix] *= 2;
     }"#;
 
-    let bundle = CodeBundle::from_textual_reprs(&[
+    let bundle = CodeBundle::from_text_bytes(&[
         text.as_bytes()
     ]).unwrap();
     let param = 2u32;
     let kern = bundle.build_kernel("lol", (mem, param,)).unwrap();
-    let tok = dev.launch_kernel(kern, item_count, ).unwrap();
+    let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
 
     let ft = tok.as_futex().unwrap();
     Token::await_completion_on_token_futex(ft);
@@ -1436,4 +1448,29 @@ fn props() {
     for dev in &devs {
         println!("{:#?}", dev.get_properties());
     }
+}
+
+#[test] #[ignore = "I dont know how to make this test more robust yet :("]
+fn depencencies() {
+    let devs = enumerate_devices().unwrap();
+    let dev = &devs[0];
+
+    let code = "
+    __kernel void kern1() {
+        printf(\"Kern1 exe cutin :3\");
+    };
+    __kernel void kern2() {
+        printf(\"Kern2 exe cutin :3\");
+    }
+    ";
+
+    let bundle = CodeBundle::from_text_bytes(&[code.as_bytes()]).unwrap();
+
+    let kern1 = bundle.build_kernel("kern1", ()).unwrap();
+    let kern2 = bundle.build_kernel("kern2", ()).unwrap();
+
+    let tok1 = dev.launch_kernel(kern1, 1, &[]).unwrap();
+    let tok2 = dev.launch_kernel(kern2, 1, &[&tok1]).unwrap();
+
+    tok2.await_completion().unwrap();
 }
