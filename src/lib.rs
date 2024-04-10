@@ -187,7 +187,7 @@ impl CodeBundle {
         };
         return Ok(val);
     } }
-    pub fn build_kernel(
+    pub fn instantiate_kernel(
         &self,
         name: &str,
         args: impl KernelArguments
@@ -1344,7 +1344,7 @@ fn ops_on_cb() {
     ]).unwrap();
 
     let param = 2u32;
-    let kern = bundle.build_kernel("lol", (mem, param,)).unwrap();
+    let kern = bundle.instantiate_kernel("lol", (mem, param,)).unwrap();
 
     let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
 
@@ -1390,7 +1390,7 @@ fn wait_on_blocking_call() {
     ]).unwrap();
 
     let param = 2u32;
-    let kern = bundle.build_kernel("lol", (mem, param,)).unwrap();
+    let kern = bundle.instantiate_kernel("lol", (mem, param,)).unwrap();
 
     let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
 
@@ -1430,7 +1430,7 @@ fn wait_on_token() {
         text.as_bytes()
     ]).unwrap();
     let param = 2u32;
-    let kern = bundle.build_kernel("lol", (mem, param,)).unwrap();
+    let kern = bundle.instantiate_kernel("lol", (mem, param,)).unwrap();
     let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
 
     let ft = tok.as_futex().unwrap();
@@ -1455,7 +1455,7 @@ fn props() {
     }
 }
 
-#[test] #[ignore = "I dont know how to make this test more robust yet :("]
+#[test] #[ignore = "Do matmul to test ordering"]
 fn depencencies() {
     let devs = enumerate_devices().unwrap();
     let dev = &devs[0];
@@ -1471,8 +1471,8 @@ fn depencencies() {
 
     let bundle = CodeBundle::from_text_bytes(&[code.as_bytes()]).unwrap();
 
-    let kern1 = bundle.build_kernel("kern1", ()).unwrap();
-    let kern2 = bundle.build_kernel("kern2", ()).unwrap();
+    let kern1 = bundle.instantiate_kernel("kern1", ()).unwrap();
+    let kern2 = bundle.instantiate_kernel("kern2", ()).unwrap();
 
     let tok1 = dev.launch_kernel(kern1, 1, &[]).unwrap();
     let tok2 = dev.launch_kernel(kern2, 1, &[&tok1]).unwrap();
