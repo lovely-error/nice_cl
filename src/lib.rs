@@ -658,6 +658,35 @@ fn clos() {
     assert!(unsafe {DROP_COUNT == 1});
 }
 
+pub trait GridDimmensions {
+    fn as_components(&self) -> [size_t;3];
+    fn dims(&self) -> u32;
+}
+impl GridDimmensions for (usize,) {
+    fn as_components(&self) -> [size_t;3] {
+        [self.0,0,0]
+    }
+    fn dims(&self) -> u32 {
+        1
+    }
+}
+impl GridDimmensions for (usize,usize) {
+    fn as_components(&self) -> [size_t;3] {
+        [self.0,self.1,0]
+    }
+    fn dims(&self) -> u32 {
+        2
+    }
+}
+impl GridDimmensions for (usize,usize,usize) {
+    fn as_components(&self) -> [size_t;3] {
+        [self.0,self.1,self.2]
+    }
+    fn dims(&self) -> u32 {
+        3
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum KernelLaunchFailure {
     NoMem, InvalidArgs
@@ -701,11 +730,11 @@ impl Device {
     pub fn launch_kernel(
         &self,
         kernel: Kernel,
-        grid_dims: usize,
+        grid_dimmensions: impl GridDimmensions,
         dependencies: &[&Token]
     ) -> Result<Token, KernelLaunchFailure> { unsafe {
-        let grid_dim = 1;
-        let dims: [size_t;3] = [grid_dims, 0, 0];
+        let grid_dim = grid_dimmensions.dims();
+        let dims: [size_t;3] = grid_dimmensions.as_components();
         let mut completion_token = null_mut();
         let mut deps = Vec::new();
         deps.reserve(dependencies.len());
@@ -1346,7 +1375,7 @@ fn ops_on_cb() {
     let param = 2u32;
     let kern = bundle.instantiate_kernel("lol", (mem, param,)).unwrap();
 
-    let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
+    let tok = dev.launch_kernel(kern, (item_count,), &[]).unwrap();
 
     let done = core::sync::atomic::AtomicBool::new(false);
     tok.attach_completion_callback(|_|{
@@ -1392,7 +1421,7 @@ fn wait_on_blocking_call() {
     let param = 2u32;
     let kern = bundle.instantiate_kernel("lol", (mem, param,)).unwrap();
 
-    let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
+    let tok = dev.launch_kernel(kern, (item_count,), &[]).unwrap();
 
     tok.await_completion().unwrap();
 
@@ -1431,7 +1460,7 @@ fn wait_on_token() {
     ]).unwrap();
     let param = 2u32;
     let kern = bundle.instantiate_kernel("lol", (mem, param,)).unwrap();
-    let tok = dev.launch_kernel(kern, item_count, &[]).unwrap();
+    let tok = dev.launch_kernel(kern, (item_count,), &[]).unwrap();
 
     let ft = tok.as_futex().unwrap();
     Token::await_completion_on_token_futex(ft);
@@ -1474,8 +1503,31 @@ fn depencencies() {
     let kern1 = bundle.instantiate_kernel("kern1", ()).unwrap();
     let kern2 = bundle.instantiate_kernel("kern2", ()).unwrap();
 
-    let tok1 = dev.launch_kernel(kern1, 1, &[]).unwrap();
-    let tok2 = dev.launch_kernel(kern2, 1, &[&tok1]).unwrap();
+    let tok1 = dev.launch_kernel(kern1, (1,), &[]).unwrap();
+    let tok2 = dev.launch_kernel(kern2, (1,), &[&tok1]).unwrap();
 
     tok2.await_completion().unwrap();
+}
+
+#[test] #[ignore]
+fn grid() {
+    let devs = enumerate_devices().unwrap();
+    let dev = &devs[0];
+
+    let code = "
+    __kernel void kern1() {
+        uint gix1 = get_global_id(0);
+        uint gix2 = get_global_id(1);
+        uint gix3 = get_global_id(2);
+        printf(\"%u %u %u\", gix1, gix2, gix3);
+    };
+    ";
+
+    let bundle = CodeBundle::from_text_bytes(&[code.as_bytes()]).unwrap();
+
+    let kern1 = bundle.instantiate_kernel("kern1", ()).unwrap();
+
+    let tok1 = dev.launch_kernel(kern1, (8,8,2), &[]).unwrap();
+
+    tok1.await_completion().unwrap();
 }
