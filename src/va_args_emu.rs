@@ -1,16 +1,29 @@
-use core::{any::TypeId, mem::{forget, size_of_val}, ptr::{addr_of, null_mut}};
+use core::{any::TypeId, mem::{align_of_val, forget, size_of_val, transmute}, ptr::{addr_of, drop_in_place}};
+#[repr(C)]
+pub struct ErasedRef {
+  pub data_ptr: *const u8,
+  pub size: usize,
+  pub alignment: usize,
+  pub type_id: TypeId,
+  pub dctor: fn(*mut u8)
+}
 
-pub type OpaqueHandle = (*const u8, usize, TypeId);
 pub trait KernelArgument: Sized {
-    fn as_opaque(&self) -> OpaqueHandle;
+    fn as_opaque(&self) -> ErasedRef;
 }
 
 macro_rules! autoimpl {
     ($trait:ident, $($conformer:ident),+) => {
       $(
         impl $trait for $conformer {
-          fn as_opaque(&self) -> OpaqueHandle {
-              (addr_of!(*self).cast(), size_of_val(self), TypeId::of::<Self>())
+          fn as_opaque(&self) -> ErasedRef {
+              ErasedRef {
+                data_ptr: addr_of!(*self).cast(),
+                size: size_of_val(self),
+                alignment: align_of_val(self),
+                type_id: TypeId::of::<Self>(),
+                dctor: unsafe{transmute(drop_in_place::<Self> as *mut ())}
+              }
           }
         }
       )+
@@ -31,19 +44,31 @@ autoimpl!(
 
 pub(crate) struct SomePointer {}
 impl<T> KernelArgument for *mut T {
-  fn as_opaque(&self) -> OpaqueHandle {
-    (addr_of!(*self).cast(), size_of_val(self), TypeId::of::<SomePointer>())
+  fn as_opaque(&self) -> ErasedRef {
+    ErasedRef {
+      data_ptr: addr_of!(*self).cast(),
+      size: size_of_val(self),
+      alignment: align_of_val(self),
+      type_id: TypeId::of::<SomePointer>(),
+      dctor: unsafe{transmute(drop_in_place::<Self> as *mut ())}
+    }
   }
 }
 impl KernelArgument for () {
-  fn as_opaque(&self) -> OpaqueHandle {
-    (null_mut(), 0, TypeId::of::<()>())
+  fn as_opaque(&self) -> ErasedRef {
+    ErasedRef {
+      data_ptr: addr_of!(*self).cast(),
+      size: size_of_val(self),
+      alignment: align_of_val(self),
+      type_id: TypeId::of::<Self>(),
+      dctor: unsafe{transmute(drop_in_place::<Self> as *mut ())}
+    }
   }
 }
 
 
 pub trait KernelArguments {
-    fn iter(self) -> impl Iterator<Item = OpaqueHandle>;
+    fn iter(self) -> impl Iterator<Item = ErasedRef>;
     fn len(&self) -> usize;
 }
 
@@ -101,7 +126,7 @@ impl<{}> KernelArguments for ({}) {{
 }
 
 impl KernelArguments for () {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       core::iter::from_fn(|| None)
   }
   fn len(&self) -> usize {
@@ -111,7 +136,7 @@ impl KernelArguments for () {
 
 impl<
 T0:KernelArgument,> KernelArguments for (T0,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -137,7 +162,7 @@ T0:KernelArgument,> KernelArguments for (T0,) {
 impl<
 T0:KernelArgument,
 T1:KernelArgument,> KernelArguments for (T0,T1,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -165,7 +190,7 @@ impl<
 T0:KernelArgument,
 T1:KernelArgument,
 T2:KernelArgument,> KernelArguments for (T0,T1,T2,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -195,7 +220,7 @@ T0:KernelArgument,
 T1:KernelArgument,
 T2:KernelArgument,
 T3:KernelArgument,> KernelArguments for (T0,T1,T2,T3,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -227,7 +252,7 @@ T1:KernelArgument,
 T2:KernelArgument,
 T3:KernelArgument,
 T4:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -261,7 +286,7 @@ T2:KernelArgument,
 T3:KernelArgument,
 T4:KernelArgument,
 T5:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -297,7 +322,7 @@ T3:KernelArgument,
 T4:KernelArgument,
 T5:KernelArgument,
 T6:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -335,7 +360,7 @@ T4:KernelArgument,
 T5:KernelArgument,
 T6:KernelArgument,
 T7:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -375,7 +400,7 @@ T5:KernelArgument,
 T6:KernelArgument,
 T7:KernelArgument,
 T8:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -417,7 +442,7 @@ T6:KernelArgument,
 T7:KernelArgument,
 T8:KernelArgument,
 T9:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -461,7 +486,7 @@ T7:KernelArgument,
 T8:KernelArgument,
 T9:KernelArgument,
 T10:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -507,7 +532,7 @@ T8:KernelArgument,
 T9:KernelArgument,
 T10:KernelArgument,
 T11:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -555,7 +580,7 @@ T9:KernelArgument,
 T10:KernelArgument,
 T11:KernelArgument,
 T12:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -605,7 +630,7 @@ T10:KernelArgument,
 T11:KernelArgument,
 T12:KernelArgument,
 T13:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -657,7 +682,7 @@ T11:KernelArgument,
 T12:KernelArgument,
 T13:KernelArgument,
 T14:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {
@@ -711,7 +736,7 @@ T12:KernelArgument,
 T13:KernelArgument,
 T14:KernelArgument,
 T15:KernelArgument,> KernelArguments for (T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,) {
-  fn iter(self) -> impl Iterator<Item = OpaqueHandle> {
+  fn iter(self) -> impl Iterator<Item = ErasedRef> {
       let mut ix = 0;
       let mut this = Some(self);
       core::iter::from_fn(move || {

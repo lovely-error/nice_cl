@@ -9,7 +9,7 @@ use core::{alloc::Layout, any::TypeId, cell::UnsafeCell, marker::PhantomData, me
 
 use cl_sys::{self, c_void, clBuildProgram, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clGetCommandQueueInfo, clGetDeviceIDs, clGetDeviceInfo, clGetEventInfo, clGetKernelArgInfo, clGetKernelInfo, clGetPlatformInfo, clGetProgramInfo, clReleaseCommandQueue, clReleaseContext, clReleaseDevice, clReleaseEvent, clReleaseKernel, clReleaseProgram, clSVMFree, clSetEventCallback, clSetKernelArg, clSetKernelArgSVMPointer, clWaitForEvents, cl_bitfield, cl_command_queue, cl_command_queue_properties, cl_context, cl_device_id, cl_device_svm_capabilities, cl_event, cl_int, cl_kernel, cl_platform_id, cl_program, cl_uint, libc::c_ulong, size_t, CL_COMPLETE, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_COMPUTE_UNITS, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_PREFERRED_GLOBAL_ATOMIC_ALIGNMENT, CL_DEVICE_PREFERRED_PLATFORM_ATOMIC_ALIGNMENT, CL_DEVICE_SVM_ATOMICS, CL_DEVICE_SVM_CAPABILITIES, CL_DEVICE_SVM_FINE_GRAIN_BUFFER, CL_DEVICE_SVM_FINE_GRAIN_SYSTEM, CL_DEVICE_TYPE_ALL, CL_DEVICE_VERSION, CL_EVENT_COMMAND_EXECUTION_STATUS, CL_KERNEL_ARG_TYPE_NAME, CL_KERNEL_NUM_ARGS, CL_MEM_READ_WRITE, CL_MEM_SVM_ATOMICS, CL_MEM_SVM_FINE_GRAIN_BUFFER, CL_PLATFORM_VERSION, CL_PROGRAM_KERNEL_NAMES, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, CL_QUEUE_PROPERTIES, CL_SUCCESS};
 
-use va_args_emu::{KernelArguments, OpaqueHandle, SomePointer};
+use va_args_emu::{KernelArguments, ErasedRef, SomePointer};
 
 #[derive(Debug, Clone, Copy)]
 pub enum OCLFailure {
@@ -47,8 +47,14 @@ struct SomeMemoryRef {
     _count: usize,
 }
 impl<T> va_args_emu::KernelArgument for MemoryRef<T> {
-    fn as_opaque(&self) -> OpaqueHandle {
-        (addr_of!(self.ptr).cast(), 8, TypeId::of::<SomeMemoryRef>())
+    fn as_opaque(&self) -> ErasedRef {
+        ErasedRef {
+            data_ptr: addr_of!(*self).cast(),
+            size: size_of_val(self),
+            alignment: align_of_val(self),
+            type_id: TypeId::of::<SomeMemoryRef>(),
+            dctor: unsafe{transmute(drop_in_place::<Self> as *mut ())}
+        }
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -240,7 +246,7 @@ impl CodeBundle {
         let mut ix = 0;
         let mut arg_ty_nm = [0u8;16];
         let mut arg_ty_nm_len = 0;
-        while let Some((ptr, size, id)) = iter.next() {
+        while let Some(ErasedRef { data_ptr:ptr, size, alignment:_, type_id:id, dctor:_  }) = iter.next() {
             let ret_code = clGetKernelArgInfo(
                 kern_ptr,
                 ix,
@@ -1527,7 +1533,7 @@ fn grid() {
 
     let kern1 = bundle.instantiate_kernel("kern1", ()).unwrap();
 
-    let tok1 = dev.launch_kernel(kern1, (8,8,2), &[]).unwrap();
+    let tok1 = dev.launch_kernel(kern1, (4,4,2), &[]).unwrap();
 
     tok1.await_completion().unwrap();
 }
